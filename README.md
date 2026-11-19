@@ -5,27 +5,99 @@ Keine Laufzeit-Abhängigkeiten; `assemblyscript` und `typescript` nur zum Bauen.
 
 Gesucht wird `n` in `[0, maxnumber]` mit `SHA512(salt + String(n)) == challenge`.
 
-## Benutzung
+## 🚀 How to start
+
+In drei Schritten: bauen, vier Dateien kopieren, eine Methode aufrufen.
+
+### 1. Bauen
 
 ```sh
 npm install
-npm run build   # gen -> dist/solver.wasm -> dist/*.js
-npm test        # WASM-Kern gegen node:crypto
-npm run serve   # http://localhost:8080/bench/  (nicht per file:// öffnen)
+npm run build
 ```
+
+Danach liegt alles Nötige in `dist/`.
+
+### 2. Dateien in die Webapp kopieren
+
+Diese vier Dateien aus `dist/` kommen **gemeinsam in einen Ordner**, den deine Webapp statisch ausliefert
+(z. B. `public/altcha/`):
+
+```
+public/altcha/
+├── index.js      ← Einstiegspunkt (das importierst du)
+├── worker.js     ← wird von index.js automatisch gestartet
+├── protocol.js   ← von beiden benötigt
+└── solver.wasm   ← wird von index.js automatisch geladen
+```
+
+> **Wichtig:** Alle vier im selben Ordner und auf derselben Domain wie die Seite –
+> `index.js` lädt Worker und WASM relativ zu sich selbst.
+
+### 3. Methode aufrufen
 
 ```js
-import { createSolver } from './dist/index.js';
-const solver = createSolver();          // früh aufrufen: kompiliert WASM, startet Worker
-const { number, took, payload } = await solver.solve(challengeJson);
+import { createSolver } from '/altcha/index.js';
+
+// Einmal beim Laden der Seite: WASM kompilieren + Worker starten (~50–100 ms)
+const solver = createSolver();
+
+// Wann immer gelöst werden soll:
+async function getAltchaPayload() {
+  const challenge = await fetch('/api/altcha/challenge').then((r) => r.json());
+  const { payload } = await solver.solve(challenge);
+  return payload; // Base64-String → an den Server schicken
+}
 ```
 
-Optionen: `createSolver({ workers, wasmUrl, workerUrl })`. Ohne `workers` wird
-`navigator.hardwareConcurrency` verwendet (Fallback 4).
+Den `payload` schickst du an deinen Server (z. B. als Formularfeld `altcha` oder als Header),
+der ihn wie gewohnt verifiziert (z. B. `verifySolution`).
 
-Ausliefern: `dist/index.js`, `dist/worker.js`, `dist/protocol.js`, `dist/solver.wasm` (im selben Ordner).
-CSP braucht ggf. `script-src 'wasm-unsafe-eval'`. Browser: alle mit WASM-SIMD
-(Chrome/Edge 91+, Firefox 89+, Safari 16.4+).
+### Erwartetes Challenge-Format (ALTCHA v1)
+
+```json
+{
+  "algorithm": "SHA-512",
+  "challenge": "<128 Hex-Zeichen>",
+  "salt": "…",
+  "maxnumber": 1000000,
+  "signature": "…"
+}
+```
+
+`solve()` nimmt das als Objekt oder als JSON-String. Fehlt `maxnumber`, gilt `1000000`.
+
+### API
+
+| Aufruf | Beschreibung |
+|---|---|
+| `createSolver(options?)` | Erstellt den Pool. `options.workers` (Standard: `navigator.hardwareConcurrency`, sonst 4), `options.wasmUrl`, `options.workerUrl` |
+| `solver.ready` | Promise: erfüllt, sobald WASM kompiliert und alle Worker bereit sind |
+| `solver.solve(challenge, { signal? })` | Liefert `{ number, took, payload }`; abbrechbar per `AbortController` |
+| `solver.destroy()` | Beendet alle Worker |
+
+### ✅ Checkliste
+
+- [ ] **CSP:** Falls vorhanden, braucht sie `script-src 'wasm-unsafe-eval'` und `worker-src 'self'`.
+- [ ] **MIME-Typ:** `.wasm` idealerweise als `application/wasm` ausliefern
+      (sonst funktioniert es trotzdem, nur über einen etwas langsameren Ladeweg).
+- [ ] **Bundler (Vite, Webpack 5, …):** Direktimport von `dist/index.js` geht auch – beide erkennen
+      `new URL('./worker.js', import.meta.url)`. Der `public/`-Weg ist aber am robustesten.
+- [ ] **Browser:** alle mit WASM-SIMD – Chrome/Edge 91+, Firefox 89+, Safari 16.4+.
+
+### 💡 Tipps
+
+- **Früh erstellen:** `createSolver()` beim Seitenladen aufrufen, dann kostet `solve()` nur noch die reine Rechenzeit.
+  Untätige Worker verbrauchen keine CPU.
+- **Nur selten gebraucht?** `createSolver()` erst beim Lösen aufrufen und danach `solver.destroy()`.
+- **Abbrechen:** `solver.solve(challenge, { signal: controller.signal })`.
+
+## 🛠️ Entwicklung
+
+```sh
+npm test        # WASM-Kern gegen node:crypto testen
+npm run serve   # Testseite: http://localhost:8080/bench/  (nicht per file:// öffnen)
+```
 
 ## Dateien
 
