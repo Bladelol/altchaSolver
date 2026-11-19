@@ -7,7 +7,7 @@ Gesucht wird `n` in `[0, maxnumber]` mit `SHA512(salt + String(n)) == challenge`
 
 ## 🚀 How to start
 
-In drei Schritten: bauen, vier Dateien kopieren, eine Methode aufrufen.
+In drei Schritten: bauen, drei Dateien kopieren, eine Methode aufrufen.
 
 ### 1. Bauen
 
@@ -20,24 +20,26 @@ Danach liegt alles Nötige in `dist/`.
 
 ### 2. Dateien in die Webapp kopieren
 
-Diese vier Dateien aus `dist/` kommen **gemeinsam in einen Ordner**, den deine Webapp statisch ausliefert
+Diese drei Dateien aus `dist/` kommen **gemeinsam in einen Ordner**, den deine Webapp statisch ausliefert
 (z. B. `public/altcha/`):
 
 ```
 public/altcha/
-├── index.js      ← Einstiegspunkt (das importierst du)
-├── worker.js     ← wird von index.js automatisch gestartet
-├── protocol.js   ← von beiden benötigt
-└── solver.wasm   ← wird von index.js automatisch geladen
+├── altcha-solver.mjs   ← Einstiegspunkt mit der API (das importierst du)
+├── altcha-worker.mjs   ← wird von altcha-solver.mjs automatisch als Worker gestartet
+└── solver.wasm         ← wird von altcha-solver.mjs automatisch geladen
 ```
 
-> **Wichtig:** Alle vier im selben Ordner und auf derselben Domain wie die Seite –
-> `index.js` lädt Worker und WASM relativ zu sich selbst.
+Optional für TypeScript-Projekte: `altcha-solver.d.mts` (Typen) daneben legen.
+`protocol.js` und die übrigen `.d.*ts`-Dateien enthalten nur Typen und werden zur Laufzeit nicht gebraucht.
+
+> **Wichtig:** Alle drei im selben Ordner und auf derselben Domain wie die Seite –
+> `altcha-solver.mjs` lädt Worker und WASM relativ zu sich selbst.
 
 ### 3. Methode aufrufen
 
 ```js
-import { createSolver } from '/altcha/index.js';
+import { createSolver } from '/altcha/altcha-solver.mjs';
 
 // Einmal beim Laden der Seite: WASM kompilieren + Worker starten (~50–100 ms)
 const solver = createSolver();
@@ -78,11 +80,14 @@ der ihn wie gewohnt verifiziert (z. B. `verifySolution`).
 
 ### ✅ Checkliste
 
-- [ ] **CSP:** Falls vorhanden, braucht sie `script-src 'wasm-unsafe-eval'` und `worker-src 'self'`.
-- [ ] **MIME-Typ:** `.wasm` idealerweise als `application/wasm` ausliefern
+- [ ] **CSP:** Falls vorhanden, braucht sie `script-src 'wasm-unsafe-eval'` und `worker-src 'self'`
+      (kein `blob:` nötig).
+- [ ] **MIME-Typ `.mjs`:** beide `.mjs` müssen als `text/javascript` ausgeliefert werden – sonst lehnt der Browser das Modul ab.
+      Gängige Server (nginx, Apache, Caddy, Express, …) tun das bereits.
+- [ ] **MIME-Typ `.wasm`:** idealerweise `application/wasm`
       (sonst funktioniert es trotzdem, nur über einen etwas langsameren Ladeweg).
-- [ ] **Bundler (Vite, Webpack 5, …):** Direktimport von `dist/index.js` geht auch – beide erkennen
-      `new URL('./worker.js', import.meta.url)`. Der `public/`-Weg ist aber am robustesten.
+- [ ] **Bundler (Vite, Webpack 5, …):** Am robustesten über `public/` einbinden, damit der Bundler die Dateien
+      nicht anfasst. Liegt `solver.wasm` woanders: `createSolver({ wasmUrl: '/pfad/solver.wasm' })`.
 - [ ] **Browser:** alle mit WASM-SIMD – Chrome/Edge 91+, Firefox 89+, Safari 16.4+.
 
 ### 💡 Tipps
@@ -106,8 +111,8 @@ npm run serve   # Testseite: http://localhost:8080/bench/  (nicht per file:// ö
 | `scripts/gen-sha512.mjs` | Generator für die SHA-512-Kompression. Schreibt `assembly/sha512.generated.ts`: alle 80 Runden ausgerollt, nur lokale `v128`-Variablen, Einsprung bei Runde `k` per `switch`, Vergleich von `H3` nach Runde 77. |
 | `assembly/sha512.generated.ts` | *Build-Ergebnis, nicht im Git.* Exportiert `block()` (ein Block, optional mit frühem Vergleich) und `prefixRounds()` (nur die Runden `0..k-1`). |
 | `assembly/index.ts` | Kern im WASM: statische Puffer, `setup()` (Midstate über volle Salt-Blöcke, Ziel-Wort), `search(start, count)` (baut Nachrichtenende mit ASCII-Ziffern, zählt in-place hoch, ruft `block()` für Paare `n`/`n+1`). |
-| `src/index.ts` | Öffentliche API für den Browser: kompiliert `solver.wasm`, startet den Worker-Pool, zerlegt `[0, maxnumber]` in Chunks, verteilt sie, prüft Treffer per `crypto.subtle` und baut den Base64-Payload. |
-| `src/worker.ts` | Worker: instanziiert das übergebene Modul einmal, schreibt Salt/Ziel in den WASM-Speicher, rechnet Chunks und meldet `found` (oder `-1`). |
+| `src/altcha-solver.mts` | Öffentliche API für den Browser: kompiliert `solver.wasm`, startet den Worker-Pool, zerlegt `[0, maxnumber]` in Chunks, verteilt sie, prüft Treffer per `crypto.subtle` und baut den Base64-Payload. |
+| `src/altcha-worker.mts` | Worker: instanziiert das übergebene Modul einmal, schreibt Salt/Ziel in den WASM-Speicher, rechnet Chunks und meldet `found` (oder `-1`). |
 | `src/protocol.ts` | Nachrichtentypen zwischen Hauptthread und Worker (`init`, `job`, `chunk`, `ready`, `done`). |
 | `test/core.test.mjs` | Testet den WASM-Kern in Node gegen `node:crypto` (alle Salt-Längen 0–300, Stellenwechsel, unlösbar) + Mini-Benchmark. |
 | `bench/index.html` | Testseite im Browser: zufällige Challenges lösen, Durchsatz messen, Worker-Anzahl wählen. |
@@ -122,13 +127,13 @@ npm run serve   # Testseite: http://localhost:8080/bench/  (nicht per file:// ö
 scripts/gen-sha512.mjs ──► assembly/sha512.generated.ts ─┐
                                                          ├─ asc -O3 --enable simd ──► dist/solver.wasm
                            assembly/index.ts ────────────┘
-src/*.ts ───────────────────────────── tsc ─────────────────► dist/index.js, worker.js, protocol.js
+src/*.mts ──────────────────────────── tsc ─────────────────► dist/altcha-solver.mjs, dist/altcha-worker.mjs
 ```
 
 ### Laufzeit
 
 ```
- Hauptthread (src/index.ts)                              Worker 1..N (src/worker.ts + solver.wasm)
+ Hauptthread (altcha-solver.mjs)                         Worker 1..N (altcha-worker.mjs + wasm)
  ─────────────────────────                               ──────────────────────────────────────────
  createSolver()
    compileStreaming(solver.wasm) ── Module ─ init ────►   instantiate(Module)  (einmal pro Worker)

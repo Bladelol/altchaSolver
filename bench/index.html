@@ -23,7 +23,7 @@
 <button id="tput">Durchsatz messen (ganzer Bereich, unlösbar)</button>
 <pre id="log"></pre>
 <script type="module">
-  import { createSolver } from '../dist/index.js';
+  import { createSolver } from '../dist/altcha-solver.mjs';
 
   const $ = (id) => document.getElementById(id);
   const log = (s) => ($('log').textContent += s + '\n');

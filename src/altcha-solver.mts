@@ -68,7 +68,7 @@ function* chunks(max: number, size: number): Generator<[number, number]> {
 export function createSolver(options: SolverOptions = {}): Solver {
   const count = Math.max(1, options.workers ?? navigator.hardwareConcurrency ?? 4);
   const wasmUrl = options.wasmUrl ?? new URL('./solver.wasm', import.meta.url);
-  const workerUrl = options.workerUrl ?? new URL('./worker.js', import.meta.url);
+  const workerUrl = options.workerUrl ?? new URL('./altcha-worker.mjs', import.meta.url);
 
   const workers: Worker[] = [];
   let onDone: ((w: Worker, id: number, found: number) => void) | null = null;
