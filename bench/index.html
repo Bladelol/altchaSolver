@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ALTCHA-Solver Benchmark</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 16px; }
+  fieldset { border: 1px solid #8884; border-radius: 6px; margin-bottom: 1rem; }
+  label { margin-right: 1rem; }
+  input { width: 8rem; }
+  pre { background: #8881; padding: .75rem; border-radius: 6px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>ALTCHA-Solver (SHA-512, WASM-SIMD)</h1>
+<fieldset>
+  <label>Worker <input id="workers" type="number" min="1"></label>
+  <label>maxnumber <input id="max" type="number" value="1000000"></label>
+  <label>Salt-Länge <input id="saltLen" type="number" value="43"></label>
+</fieldset>
+<button id="solve">Zufällige Challenge lösen (10x)</button>
+<button id="tput">Durchsatz messen (ganzer Bereich, unlösbar)</button>
+<pre id="log"></pre>
+<script type="module">
+  import { createSolver } from '../dist/index.js';
+
+  const $ = (id) => document.getElementById(id);
+  const log = (s) => ($('log').textContent += s + '\n');
+  $('workers').value = navigator.hardwareConcurrency;
+
+  let solver, solverWorkers;
+  async function getSolver() {
+    const n = Number($('workers').value);
+    if (!solver || solverWorkers !== n) {
+      solver?.destroy();
+      const t0 = performance.now();
+      solver = createSolver({ workers: n });
+      solverWorkers = n;
+      await solver.ready;
+      log(`Pool bereit: ${n} Worker in ${(performance.now() - t0).toFixed(1)} ms`);
+    }
+    return solver;
+  }
+
+  const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const randSalt = (len) => hex(crypto.getRandomValues(new Uint8Array(Math.ceil(len / 2)))).slice(0, len);
+  async function makeChallenge(max, saltLen, number = Math.floor(Math.random() * (max + 1))) {
+    const salt = randSalt(saltLen);
+    const challenge = hex(await crypto.subtle.digest('SHA-512', new TextEncoder().encode(salt + number)));
+    return { ch: { algorithm: 'SHA-512', challenge, salt, maxnumber: max, signature: 'bench' }, number };
+  }
+
+  $('solve').onclick = async () => {
+    const s = await getSolver();
+    const max = Number($('max').value), saltLen = Number($('saltLen').value);
+    let total = 0, hashes = 0;
+    for (let i = 0; i < 10; i++) {
+      const { ch, number } = await makeChallenge(max, saltLen);
+      const t0 = performance.now();
+      const r = await s.solve(ch);
+      const dt = performance.now() - t0;
+      total += dt; hashes += number + 1;
+      log(`n=${r.number} ${r.number === number ? '✓' : '✗ erwartet ' + number}  ${dt.toFixed(1)} ms`);
+    }
+    log(`Ø ${(total / 10).toFixed(1)} ms pro Challenge\n`);
+  };
+
+  $('tput').onclick = async () => {
+    const s = await getSolver();
+    const max = Number($('max').value), saltLen = Number($('saltLen').value);
+    const { ch } = await makeChallenge(max, saltLen, -1); // Zahl -1 kommt nie vor -> ganzer Bereich
+    const t0 = performance.now();
+    await s.solve(ch).catch(() => {});
+    const dt = (performance.now() - t0) / 1000;
+    log(`${max.toLocaleString()} Hashes in ${(dt * 1000).toFixed(0)} ms = ${(max / dt / 1e6).toFixed(1)} Mio./s mit ${solverWorkers} Workern\n`);
+  };
+</script>
+</body>
+</html>

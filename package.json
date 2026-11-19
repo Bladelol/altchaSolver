@@ -1,0 +1,18 @@
+{
+  "name": "altcha-solver",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "gen": "node scripts/gen-sha512.mjs",
+    "build:wasm": "asc assembly/index.ts -o dist/solver.wasm -O3 --runtime stub --noAssert --converge --enable simd",
+    "build:ts": "tsc -p tsconfig.json",
+    "build": "npm run gen && npm run build:wasm && npm run build:ts",
+    "test": "node test/core.test.mjs",
+    "serve": "node scripts/serve.mjs"
+  },
+  "devDependencies": {
+    "assemblyscript": "^0.28.20",
+    "typescript": "^7.0.2"
+  }
+}
