@@ -3,7 +3,8 @@
 ALTCHA-Löser (v1, SHA-512) für den Browser: WASM-SIMD (`i64x2`, 2 Kandidaten pro Kompression) + Worker-Pool.
 Keine Laufzeit-Abhängigkeiten; `assemblyscript` und `typescript` nur zum Bauen.
 
-Gesucht wird `n` in `[0, maxnumber]` mit `SHA512(salt + String(n)) == challenge`.
+Gesucht wird `n` in `[0, maxnumber]` mit `SHA512(salt + String(n)) == challenge` –
+zuerst ab `maxnumber/2` aufwärts, danach (falls dort nichts gefunden wird) der Bereich darunter.
 
 ## 🚀 How to start
 
@@ -45,29 +46,16 @@ import { createSolver } from '/altcha/altcha-solver.mjs';
 const solver = createSolver();
 
 // Wann immer gelöst werden soll:
-async function getAltchaPayload() {
-  const challenge = await fetch('/api/altcha/challenge').then((r) => r.json());
-  const { payload } = await solver.solve(challenge);
-  return payload; // Base64-String → an den Server schicken
-}
+const { number, took } = await solver.solve(challenge, salt, maxnumber);
 ```
 
-Den `payload` schickst du an deinen Server (z. B. als Formularfeld `altcha` oder als Header),
-der ihn wie gewohnt verifiziert (z. B. `verifySolution`).
+- `challenge`: SHA-512-Hash als Hex-String (128 Zeichen)
+- `salt`: String, der vor die Zahl gehängt wird
+- `maxnumber`: obere Grenze (inklusive)
 
-### Erwartetes Challenge-Format (ALTCHA v1)
-
-```json
-{
-  "algorithm": "SHA-512",
-  "challenge": "<128 Hex-Zeichen>",
-  "salt": "…",
-  "maxnumber": 1000000,
-  "signature": "…"
-}
-```
-
-`solve()` nimmt das als Objekt oder als JSON-String. Fehlt `maxnumber`, gilt `1000000`.
+Ergebnis ist die gefundene Zahl `number` und die Rechenzeit `took` in ms.
+Den Payload für den Server (z. B. Base64-JSON mit `algorithm`, `challenge`, `number`, `salt`, `signature`)
+baust du selbst daraus.
 
 ### API
 
@@ -75,7 +63,7 @@ der ihn wie gewohnt verifiziert (z. B. `verifySolution`).
 |---|---|
 | `createSolver(options?)` | Erstellt den Pool. `options.workers` (Standard: `navigator.hardwareConcurrency`, sonst 4), `options.wasmUrl`, `options.workerUrl` |
 | `solver.ready` | Promise: erfüllt, sobald WASM kompiliert und alle Worker bereit sind |
-| `solver.solve(challenge, { signal? })` | Liefert `{ number, took, payload }`; abbrechbar per `AbortController` |
+| `solver.solve(challenge, salt, maxnumber, { signal? })` | Liefert `{ number, took }`; abbrechbar per `AbortController` |
 | `solver.destroy()` | Beendet alle Worker |
 
 ### ✅ Checkliste
@@ -95,7 +83,7 @@ der ihn wie gewohnt verifiziert (z. B. `verifySolution`).
 - **Früh erstellen:** `createSolver()` beim Seitenladen aufrufen, dann kostet `solve()` nur noch die reine Rechenzeit.
   Untätige Worker verbrauchen keine CPU.
 - **Nur selten gebraucht?** `createSolver()` erst beim Lösen aufrufen und danach `solver.destroy()`.
-- **Abbrechen:** `solver.solve(challenge, { signal: controller.signal })`.
+- **Abbrechen:** `solver.solve(challenge, salt, maxnumber, { signal: controller.signal })`.
 
 ## 🛠️ Entwicklung
 
@@ -111,7 +99,7 @@ npm run serve   # Testseite: http://localhost:8080/bench/  (nicht per file:// ö
 | `scripts/gen-sha512.mjs` | Generator für die SHA-512-Kompression. Schreibt `assembly/sha512.generated.ts`: alle 80 Runden ausgerollt, nur lokale `v128`-Variablen, Einsprung bei Runde `k` per `switch`, Vergleich von `H3` nach Runde 77. |
 | `assembly/sha512.generated.ts` | *Build-Ergebnis, nicht im Git.* Exportiert `block()` (ein Block, optional mit frühem Vergleich) und `prefixRounds()` (nur die Runden `0..k-1`). |
 | `assembly/index.ts` | Kern im WASM: statische Puffer, `setup()` (Midstate über volle Salt-Blöcke, Ziel-Wort), `search(start, count)` (baut Nachrichtenende mit ASCII-Ziffern, zählt in-place hoch, ruft `block()` für Paare `n`/`n+1`). |
-| `src/altcha-solver.mts` | Öffentliche API für den Browser: kompiliert `solver.wasm`, startet den Worker-Pool, zerlegt `[0, maxnumber]` in Chunks, verteilt sie, prüft Treffer per `crypto.subtle` und baut den Base64-Payload. |
+| `src/altcha-solver.mts` | Öffentliche API für den Browser: kompiliert `solver.wasm`, startet den Worker-Pool, zerlegt `[0, maxnumber]` in Chunks (erst ab `maxnumber/2` aufwärts, dann der Rest), verteilt sie und prüft Treffer per `crypto.subtle`. |
 | `src/altcha-worker.mts` | Worker: instanziiert das übergebene Modul einmal, schreibt Salt/Ziel in den WASM-Speicher, rechnet Chunks und meldet `found` (oder `-1`). |
 | `src/protocol.ts` | Nachrichtentypen zwischen Hauptthread und Worker (`init`, `job`, `chunk`, `ready`, `done`). |
 | `test/core.test.mjs` | Testet den WASM-Kern in Node gegen `node:crypto` (alle Salt-Längen 0–300, Stellenwechsel, unlösbar) + Mini-Benchmark. |
@@ -138,16 +126,17 @@ src/*.mts ───────────────────────�
  createSolver()
    compileStreaming(solver.wasm) ── Module ─ init ────►   instantiate(Module)  (einmal pro Worker)
                                  ◄──────────── ready ──
- solve(challenge)
+ solve(challenge, salt, maxnumber)
    salt, target (64 Bytes) ──────────────── job ─────►   Salt/Ziel in WASM-Speicher, setup()
                                                            └─ Midstate über volle Salt-Blöcke
-   Chunks [s, s+size) aufsteigend,
+   Chunks [s, s+size) ab maxnumber/2
+   aufsteigend, danach 0..maxnumber/2,
    2 pro Worker gleichzeitig ────────────── chunk ───►   search(s, size)
                                  ◄──────── done(-1) ──     └─ kein Treffer
    nächsten Chunk nachschieben ──────────── chunk ───►   search(...)
                                  ◄──────── done(n) ───     └─ Treffer (64-Bit-Vergleich)
    crypto.subtle: SHA512(salt+n) == challenge?
-   ja → { number, took, payload }; Job-ID erhöhen, Rest-Chunks werden ignoriert
+   ja → { number, took }; Job-ID erhöhen, Rest-Chunks werden ignoriert
 ```
 
 Chunks haben Start und Länge als Vielfache von 10 und gehen nie über eine Zehnerpotenz

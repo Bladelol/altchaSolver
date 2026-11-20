@@ -1,21 +1,10 @@
 // ALTCHA-Solver (SHA-512) – WASM-SIMD + Worker-Pool, ohne Laufzeit-Abhängigkeiten.
 import type { ToWorker, FromWorker } from './protocol.js';
 
-export interface Challenge {
-  algorithm: string;
-  challenge: string;
-  salt: string;
-  signature?: string;
-  maxnumber?: number;
-  maxNumber?: number;
-}
-
 export interface Solution {
   number: number;
   /** Rechenzeit in ms */
   took: number;
-  /** Fertiger ALTCHA-Payload (Base64-JSON) für das Formularfeld bzw. den Server */
-  payload: string;
 }
 
 export interface SolverOptions {
@@ -30,11 +19,14 @@ export interface SolverOptions {
 export interface Solver {
   /** Erfüllt, sobald Modul kompiliert und alle Worker bereit sind. */
   ready: Promise<void>;
-  solve(challenge: Challenge | string, opts?: { signal?: AbortSignal }): Promise<Solution>;
+  /**
+   * Sucht n in [0, maxnumber] mit SHA512(salt + n) == challenge.
+   * Gesucht wird zuerst ab maxnumber/2 aufwärts, danach (falls nötig) der Rest darunter.
+   */
+  solve(challenge: string, salt: string, maxnumber: number, opts?: { signal?: AbortSignal }): Promise<Solution>;
   destroy(): void;
 }
 
-const DEFAULT_MAX = 1_000_000;
 const IN_FLIGHT = 2; // Chunks pro Worker gleichzeitig -> kein Leerlauf durch Nachrichten-Roundtrip
 
 const enc = new TextEncoder();
@@ -53,16 +45,23 @@ async function sha512Hex(text: string): Promise<string> {
   return s;
 }
 
-/** Zerlegt [0, max] in Chunks: Start und Länge Vielfache von 10, nie über eine Zehnerpotenz. */
-function* chunks(max: number, size: number): Generator<[number, number]> {
-  const end = Math.ceil((max + 1) / 10) * 10;
+/** Zerlegt [from, end) in Chunks (from, end Vielfache von 10): Start und Länge Vielfache von 10, nie über eine Zehnerpotenz. */
+function* range(from: number, end: number, size: number): Generator<[number, number]> {
   let pow = 10;
-  for (let s = 0; s < end; ) {
+  for (let s = from; s < end; ) {
     while (pow <= s) pow *= 10;
     const e = Math.min(s + size, pow, end);
     yield [s, e - s];
     s = e;
   }
+}
+
+/** Erst [max/2, max], danach [0, max/2) – jeweils auf Zehner gerundet. */
+function* chunks(max: number, size: number): Generator<[number, number]> {
+  const end = Math.ceil((max + 1) / 10) * 10;
+  const mid = Math.floor(max / 2 / 10) * 10;
+  yield* range(mid, end, size);
+  yield* range(0, mid, size);
 }
 
 export function createSolver(options: SolverOptions = {}): Solver {
@@ -93,14 +92,12 @@ export function createSolver(options: SolverOptions = {}): Solver {
   let nextId = 0;
   let queue: Promise<unknown> = Promise.resolve();
 
-  async function run(input: Challenge | string, signal?: AbortSignal): Promise<Solution> {
-    const ch: Challenge = typeof input === 'string' ? JSON.parse(input) : input;
-    if (ch.algorithm.toUpperCase() !== 'SHA-512') throw new Error(`Nur SHA-512 unterstützt, nicht ${ch.algorithm}`);
-    const max = ch.maxnumber ?? ch.maxNumber ?? DEFAULT_MAX;
-    const salt = enc.encode(ch.salt);
+  async function run(challenge: string, saltStr: string, max: number, signal?: AbortSignal): Promise<Solution> {
+    if (!Number.isSafeInteger(max) || max < 0) throw new Error('maxnumber muss eine ganze Zahl >= 0 sein');
+    const salt = enc.encode(saltStr);
     if (salt.length > 4096) throw new Error('Salt zu lang (max. 4096 Bytes)');
-    const target = hexToBytes(ch.challenge);
-    const expected = ch.challenge.toLowerCase();
+    const target = hexToBytes(challenge);
+    const expected = challenge.toLowerCase();
 
     await ready;
     signal?.throwIfAborted();
@@ -139,15 +136,11 @@ export function createSolver(options: SolverOptions = {}): Solver {
         if (found >= 0) {
           // Endgültige Prüfung (Kern vergleicht nur 64 Bit des Hashes).
           pending++;
-          sha512Hex(ch.salt + found).then((h) => {
+          sha512Hex(saltStr + found).then((h) => {
             pending--;
             if (h === expected) {
               const took = Math.round(performance.now() - t0);
-              const payload = btoa(JSON.stringify({
-                algorithm: ch.algorithm, challenge: ch.challenge, number: found,
-                salt: ch.salt, signature: ch.signature, took,
-              }));
-              finish(() => resolve({ number: found, took, payload }));
+              finish(() => resolve({ number: found, took }));
             } else if (pending === 0) {
               finish(() => reject(new Error('Keine Lösung gefunden')));
             }
@@ -163,8 +156,8 @@ export function createSolver(options: SolverOptions = {}): Solver {
 
   return {
     ready,
-    solve(challenge, opts) {
-      const p = queue.then(() => run(challenge, opts?.signal));
+    solve(challenge, salt, maxnumber, opts) {
+      const p = queue.then(() => run(challenge, salt, maxnumber, opts?.signal));
       queue = p.catch(() => {});
       return p;
     },

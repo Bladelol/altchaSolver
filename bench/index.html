@@ -45,22 +45,22 @@
 
   const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
   const randSalt = (len) => hex(crypto.getRandomValues(new Uint8Array(Math.ceil(len / 2)))).slice(0, len);
-  async function makeChallenge(max, saltLen, number = Math.floor(Math.random() * (max + 1))) {
+  async function makeChallenge(max, saltLen, number = Math.floor(max / 2) + Math.floor(Math.random() * (max - Math.floor(max / 2) + 1))) {
     const salt = randSalt(saltLen);
     const challenge = hex(await crypto.subtle.digest('SHA-512', new TextEncoder().encode(salt + number)));
-    return { ch: { algorithm: 'SHA-512', challenge, salt, maxnumber: max, signature: 'bench' }, number };
+    return { ch: [challenge, salt, max], number };
   }
 
   $('solve').onclick = async () => {
     const s = await getSolver();
     const max = Number($('max').value), saltLen = Number($('saltLen').value);
-    let total = 0, hashes = 0;
+    let total = 0;
     for (let i = 0; i < 10; i++) {
       const { ch, number } = await makeChallenge(max, saltLen);
       const t0 = performance.now();
-      const r = await s.solve(ch);
+      const r = await s.solve(...ch);
       const dt = performance.now() - t0;
-      total += dt; hashes += number + 1;
+      total += dt;
       log(`n=${r.number} ${r.number === number ? '✓' : '✗ erwartet ' + number}  ${dt.toFixed(1)} ms`);
     }
     log(`Ø ${(total / 10).toFixed(1)} ms pro Challenge\n`);
@@ -71,7 +71,7 @@
     const max = Number($('max').value), saltLen = Number($('saltLen').value);
     const { ch } = await makeChallenge(max, saltLen, -1); // Zahl -1 kommt nie vor -> ganzer Bereich
     const t0 = performance.now();
-    await s.solve(ch).catch(() => {});
+    await s.solve(...ch).catch(() => {});
     const dt = (performance.now() - t0) / 1000;
     log(`${max.toLocaleString()} Hashes in ${(dt * 1000).toFixed(0)} ms = ${(max / dt / 1e6).toFixed(1)} Mio./s mit ${solverWorkers} Workern\n`);
   };
